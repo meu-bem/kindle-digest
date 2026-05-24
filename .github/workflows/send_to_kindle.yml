@@ -1,0 +1,98 @@
+name: Send Reddit Digest to Kindle
+
+on:
+  schedule:
+    # Run daily at 8:00 AM
+    - cron: '0 8 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  generate-and-send:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pandoc calibre
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create output directory
+      run: mkdir -p output
+    
+    - name: Create .env file from secrets
+      run: |
+        echo "USE_PROXY=${{ secrets.USE_PROXY }}" >> .env
+        echo "SUBREDDITS=${{ secrets.SUBREDDITS }}" >> .env
+        echo "POST_LIMIT_PER_SUBREDDIT=${{ secrets.POST_LIMIT_PER_SUBREDDIT }}" >> .env
+        echo "TOP_COMMENTS_PER_POST=${{ secrets.TOP_COMMENTS_PER_POST }}" >> .env
+        echo "MIN_SCORE=${{ secrets.MIN_SCORE }}" >> .env
+        echo "COMMENT_DEPTH=${{ secrets.COMMENT_DEPTH }}" >> .env
+        echo "INCLUDE_NESTED_COMMENTS=${{ secrets.INCLUDE_NESTED_COMMENTS }}" >> .env
+        echo "USER_AGENT=${{ secrets.USER_AGENT }}" >> .env
+        echo "SMTP_SERVER=${{ secrets.SMTP_SERVER }}" >> .env
+        echo "SMTP_PORT=${{ secrets.SMTP_PORT }}" >> .env
+        echo "SENDER_EMAIL=${{ secrets.SENDER_EMAIL }}" >> .env
+        echo "SENDER_PASSWORD=${{ secrets.SENDER_PASSWORD }}" >> .env
+        echo "KINDLE_EMAIL=${{ secrets.KINDLE_EMAIL }}" >> .env
+    
+    - name: Run digest generator
+      run: python digest.py
+    
+    - name: Upload output artifacts (for debugging)
+      uses: actions/upload-artifact@v4
+      if: always()  # Upload even if workflow fails
+      with:
+        name: reddit-digest-output
+        path: output/
+        retention-days: 7
+    
+    - name: Clean up .env file (security)
+      if: always()
+      run: rm -f .env
+    
+    - name: Send failure notification to Discord
+      if: failure()
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{
+              "content": "❌ Reddit digest generation failed!\nRepository: ${{ github.repository }}\nWorkflow: ${{ github.workflow }}\nRun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }' \
+            "$DISCORD_WEBHOOK_URL"
+        fi
+    
+    - name: Send success notification to Discord
+      if: success()
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      run: |
+        if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{
+              "content": "✅ Reddit digest sent to Kindle successfully!\nRepository: ${{ github.repository }}\nDate: $(date +'\''%Y-%m-%d'\'')"
+            }' \
+            "$DISCORD_WEBHOOK_URL"
+        fi
